@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Apollo Lunar Lander</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "Courier New", monospace;
+    overflow: hidden;
+  }
+  #game {
+    background: #000;
+    display: block;
+    max-width: 100vw;
+    max-height: 100vh;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="960" height="640"></canvas>
+<script>
+"use strict";
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const W = canvas.width;
+const H = canvas.height;
+
+// ---------------------------------------------------------------------------
+// Tunables
+// ---------------------------------------------------------------------------
+const GRAVITY        = 22;    // px/s^2 (lunar-ish, scaled)
+const THRUST_ACCEL   = 58;    // px/s^2 when engine on
+const ROT_SPEED      = 1.8;   // rad/s
+const FUEL_MAX       = 100;
+const FUEL_BURN      = 12;    // units/s while engine on
+const PAD_WIDTH      = 110;   // flat landing zone width
+const MAX_VY_LAND    = 28;    // max safe vertical speed (px/s)
+const MAX_VX_LAND    = 16;    // max safe horizontal speed (px/s)
+const MAX_TILT_LAND  = 0.15;  // max safe tilt at touchdown (rad, ~8.6 deg)
+const LANDER_SIZE    = 14;    // half-width of the lander body
+
+// ---------------------------------------------------------------------------
+// Input
+// ---------------------------------------------------------------------------
+const keys = {};
+addEventListener("keydown", e => {
+  if (["ArrowLeft", "ArrowRight", "ArrowUp", " "].includes(e.key)) e.preventDefault();
+  keys[e.key] = true;
+  if (state !== "flying" && (e.key === " " || e.key === "r" || e.key === "R")) reset();
+});
+addEventListener("keyup", e => { keys[e.key] = false; });
+
+// ---------------------------------------------------------------------------
+// World
+// ---------------------------------------------------------------------------
+let terrain = [];   // list of {x, y} points, left to right
+let padX0, padX1, padY;
+let stars = [];
+let lander, state, particles, debris, message, elapsed;
+
+function generateTerrain() {
+  terrain = [];
+  // Pick where the flat pad goes (avoid extreme edges)
+  const padStart = 100 + Math.random() * (W - 200 - PAD_WIDTH);
+  padX0 = padStart;
+  padX1 = padStart + PAD_WIDTH;
+  padY = H - 80 - Math.random() * 60;
+
+  let x = 0;
+  let y = H - 60 - Math.random() * 120;
+  terrain.push({ x, y });
+  while (x < W) {
+    const step = 20 + Math.random() * 25;
+    if (x < padX0 && x + step >= padX0) {
+      // Enter the pad: flat segment
+      terrain.push({ x: padX0, y: padY });
+      terrain.push({ x: padX1, y: padY });
+      x = padX1;
+      y = padY;
+      continue;
+    }
+    x += step;
+    y += (Math.random() - 0.5) * 70;
+    y = Math.max(H * 0.45, Math.min(H - 40, y));
+    terrain.push({ x: Math.min(x, W), y });
+  }
+}
+
+function terrainHeightAt(x) {
+  for (let i = 0; i < terrain.length - 1; i++) {
+    const a = terrain[i], b = terrain[i + 1];
+    if (x >= a.x && x <= b.x) {
+      const t = (x - a.x) / (b.x - a.x || 1);
+      return a.y + t * (b.y - a.y);
+    }
+  }
+  return H;
+}
+
+function reset() {
+  generateTerrain();
+  stars = Array.from({ length: 90 }, () => ({
+    x: Math.random() * W,
+    y: Math.random() * H * 0.7,
+    r: Math.random() * 1.4 + 0.3
+  }));
+  lander = {
+    x: 80 + Math.random() * (W - 160),
+    y: 70,
+    vx: (Math.random() * 2 - 1) * 25,
+    vy: 10,
+    angle: 0,          // 0 = upright, positive = clockwise
+    fuel: FUEL_MAX,
+    thrusting: false
+  };
+  particles = [];
+  debris = [];
+  message = "";
+  elapsed = 0;
+  state = "flying";
+}
+
+// ---------------------------------------------------------------------------
+// Update
+// ---------------------------------------------------------------------------
+function update(dt) {
+  elapsed += dt;
+  if (state === "flying") {
+    if (keys["ArrowLeft"])  lander.angle -= ROT_SPEED * dt;
+    if (keys["ArrowRight"]) lander.angle += ROT_SPEED * dt;
+
+    lander.thrusting = !!keys["ArrowUp"] && lander.fuel > 0;
+    if (lander.thrusting) {
+      lander.vx += Math.sin(lander.angle) * THRUST_ACCEL * dt;
+      lander.vy -= Math.cos(lander.angle) * THRUST_ACCEL * dt;
+      lander.fuel = Math.max(0, lander.fuel - FUEL_BURN * dt);
+      spawnExhaust();
+    }
+
+    lander.vy += GRAVITY * dt;
+    lander.x += lander.vx * dt;
+    lander.y += lander.vy * dt;
+
+    // Wrap horizontally so the ship never leaves the screen
+    if (lander.x < 0) lander.x += W;
+    if (lander.x > W) lander.x -= W;
+
+    checkContact();
+  }
+
+  // Particles
+  for (const p of particles) {
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.life -= dt;
+  }
+  particles = particles.filter(p => p.life > 0);
+
+  for (const d of debris) {
+    d.vy += GRAVITY * dt;
+    d.x += d.vx * dt;
+    d.y += d.vy * dt;
+    d.rot += d.vr * dt;
+    if (d.y > terrainHeightAt(d.x) - 2) { d.vy *= -0.35; d.vx *= 0.7; d.y = terrainHeightAt(d.x) - 2; }
+  }
+}
+
+function spawnExhaust() {
+  for (let i = 0; i < 3; i++) {
+    const spread = (Math.random() - 0.5) * 0.5;
+    const a = lander.angle + Math.PI + spread; // opposite of nose
+    const speed = 120 + Math.random() * 60;
+    particles.push({
+      x: lander.x - Math.sin(lander.angle) * LANDER_SIZE,
+      y: lander.y + Math.cos(lander.angle) * LANDER_SIZE,
+      vx: Math.sin(a) * speed + lander.vx,
+      vy: -Math.cos(a) * speed + lander.vy,
+      life: 0.25 + Math.random() * 0.2,
+      color: Math.random() < 0.5 ? "#ffb347" : "#ffe26a"
+    });
+  }
+}
+
+function checkContact() {
+  // Legs are at the two bottom corners of the lander
+  const legOffsets = [
+    { dx: -LANDER_SIZE, dy: LANDER_SIZE + 4 },
+    { dx:  LANDER_SIZE, dy: LANDER_SIZE + 4 }
+  ];
+  const cos = Math.cos(lander.angle), sin = Math.sin(lander.angle);
+  let touched = false;
+  for (const leg of legOffsets) {
+    const lx = lander.x + leg.dx * cos - leg.dy * sin;
+    const ly = lander.y + leg.dx * sin + leg.dy * cos;
+    if (ly >= terrainHeightAt(lx)) { touched = true; break; }
+  }
+  if (!touched) return;
+
+  const onPad = lander.x - LANDER_SIZE * 0.8 >= padX0 && lander.x + LANDER_SIZE * 0.8 <= padX1;
+  const tilt = Math.abs(normalizeAngle(lander.angle));
+  const softV = Math.abs(lander.vy) <= MAX_VY_LAND;
+  const softH = Math.abs(lander.vx) <= MAX_VX_LAND;
+
+  if (onPad && softV && softH && tilt <= MAX_TILT_LAND) {
+    state = "landed";
+    message = "THE EAGLE HAS LANDED!";
+    lander.vx = lander.vy = 0;
+    lander.angle = 0;
+    lander.y = padY - LANDER_SIZE - 4;
+  } else {
+    state = "crashed";
+    if (!onPad)            message = "CRASHED — MISSED THE LANDING ZONE";
+    else if (!softV)       message = "CRASHED — DESCENT TOO FAST";
+    else if (!softH)       message = "CRASHED — DRIFTING TOO FAST";
+    else                   message = "CRASHED — TOO MUCH TILT";
+    explode();
+  }
+}
+
+function normalizeAngle(a) {
+  while (a > Math.PI) a -= 2 * Math.PI;
+  while (a < -Math.PI) a += 2 * Math.PI;
+  return a;
+}
+
+function explode() {
+  for (let i = 0; i < 26; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = 40 + Math.random() * 140;
+    particles.push({
+      x: lander.x, y: lander.y,
+      vx: Math.cos(a) * s, vy: Math.sin(a) * s - 40,
+      life: 0.5 + Math.random() * 0.8,
+      color: ["#ffb347", "#ff6b35", "#ffe26a", "#ccc"][i % 4]
+    });
+  }
+  for (let i = 0; i < 8; i++) {
+    debris.push({
+      x: lander.x, y: lander.y,
+      vx: (Math.random() - 0.5) * 160,
+      vy: -Math.random() * 120,
+      rot: Math.random() * Math.PI,
+      vr: (Math.random() - 0.5) * 8,
+      size: 3 + Math.random() * 5
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Draw
+// ---------------------------------------------------------------------------
+function draw() {
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars
+  ctx.fillStyle = "#fff";
+  for (const s of stars) {
+    ctx.globalAlpha = 0.4 + 0.6 * Math.abs(Math.sin(elapsed * 0.7 + s.x));
+    ctx.fillRect(s.x, s.y, s.r, s.r);
+  }
+  ctx.globalAlpha = 1;
+
+  // Earth in the distance
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(W - 120, 90, 26, 0, Math.PI * 2);
+  ctx.fillStyle = "#2b6cb0";
+  ctx.fill();
+  ctx.clip();
+  ctx.fillStyle = "#3c9d5d";
+  ctx.beginPath(); ctx.ellipse(W - 130, 82, 12, 8, 0.5, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(W - 108, 100, 9, 6, -0.4, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+
+  drawTerrain();
+  drawPad();
+  drawParticles();
+  drawDebris();
+  if (state !== "crashed") drawLander();
+  drawHUD();
+  if (state !== "flying") drawEndScreen();
+}
+
+function drawTerrain() {
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (const p of terrain) ctx.lineTo(p.x, p.y);
+  ctx.lineTo(W, H);
+  ctx.closePath();
+  ctx.fillStyle = "#2a2a2e";
+  ctx.fill();
+  ctx.beginPath();
+  for (let i = 0; i < terrain.length; i++) {
+    const p = terrain[i];
+    i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+  }
+  ctx.strokeStyle = "#8a8a92";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+function drawPad() {
+  // Pad surface
+  ctx.fillStyle = "#4caf50";
+  ctx.fillRect(padX0, padY - 3, PAD_WIDTH, 5);
+  // Blinking beacon lights
+  const on = Math.sin(elapsed * 6) > 0;
+  ctx.fillStyle = on ? "#7CFC00" : "#2e5d2e";
+  for (const bx of [padX0 + 6, padX1 - 6]) {
+    ctx.beginPath();
+    ctx.arc(bx, padY - 8, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillRect(bx - 1, padY - 6, 2, 6);
+  }
+  // "LANDING ZONE" label
+  ctx.fillStyle = "#4caf50";
+  ctx.font = "10px Courier New";
+  ctx.textAlign = "center";
+  ctx.fillText("LANDING ZONE", (padX0 + padX1) / 2, padY + 16);
+}
+
+function drawLander() {
+  ctx.save();
+  ctx.translate(lander.x, lander.y);
+  ctx.rotate(lander.angle);
+
+  // Flame
+  if (lander.thrusting && state === "flying") {
+    const flick = 8 + Math.random() * 10;
+    ctx.beginPath();
+    ctx.moveTo(-5, LANDER_SIZE);
+    ctx.lineTo(0, LANDER_SIZE + flick + 8);
+    ctx.lineTo(5, LANDER_SIZE);
+    ctx.closePath();
+    ctx.fillStyle = "#ff9d33";
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-3, LANDER_SIZE);
+    ctx.lineTo(0, LANDER_SIZE + flick);
+    ctx.lineTo(3, LANDER_SIZE);
+    ctx.closePath();
+    ctx.fillStyle = "#ffe26a";
+    ctx.fill();
+  }
+
+  // Descent stage (gold)
+  ctx.fillStyle = "#c9a227";
+  ctx.fillRect(-LANDER_SIZE, 0, LANDER_SIZE * 2, 10);
+  ctx.strokeStyle = "#8f7118";
+  ctx.strokeRect(-LANDER_SIZE, 0, LANDER_SIZE * 2, 10);
+
+  // Ascent stage (grey octagon-ish)
+  ctx.beginPath();
+  ctx.moveTo(-9, 0);
+  ctx.lineTo(-9, -8);
+  ctx.lineTo(-4, -14);
+  ctx.lineTo(4, -14);
+  ctx.lineTo(9, -8);
+  ctx.lineTo(9, 0);
+  ctx.closePath();
+  ctx.fillStyle = "#b8b8c0";
+  ctx.fill();
+  ctx.strokeStyle = "#6f6f78";
+  ctx.stroke();
+
+  // Window
+  ctx.fillStyle = "#20324a";
+  ctx.fillRect(-6, -11, 5, 5);
+
+  // Legs
+  ctx.strokeStyle = "#999";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-9, 8);  ctx.lineTo(-LANDER_SIZE, LANDER_SIZE + 4);
+  ctx.moveTo(9, 8);   ctx.lineTo(LANDER_SIZE, LANDER_SIZE + 4);
+  ctx.stroke();
+  // Foot pads
+  ctx.fillStyle = "#999";
+  ctx.fillRect(-LANDER_SIZE - 3, LANDER_SIZE + 3, 7, 2);
+  ctx.fillRect(LANDER_SIZE - 4, LANDER_SIZE + 3, 7, 2);
+
+  ctx.restore();
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.globalAlpha = Math.max(0, p.life * 3);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - 1.5, p.y - 1.5, 3, 3);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawDebris() {
+  ctx.fillStyle = "#9a9aa2";
+  for (const d of debris) {
+    ctx.save();
+    ctx.translate(d.x, d.y);
+    ctx.rotate(d.rot);
+    ctx.fillRect(-d.size / 2, -d.size / 2, d.size, d.size);
+    ctx.restore();
+  }
+}
+
+function drawHUD() {
+  const altitude = Math.max(0, terrainHeightAt(lander.x) - lander.y - LANDER_SIZE - 4);
+  const vxOK = Math.abs(lander.vx) <= MAX_VX_LAND;
+  const vyOK = Math.abs(lander.vy) <= MAX_VY_LAND;
+
+  ctx.font = "14px Courier New";
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#9adf9a";
+  ctx.fillText(`ALTITUDE   ${altitude.toFixed(0).padStart(5)}`, 16, 26);
+  ctx.fillStyle = vyOK ? "#9adf9a" : "#ff6b6b";
+  ctx.fillText(`V-SPEED    ${lander.vy.toFixed(0).padStart(5)}`, 16, 44);
+  ctx.fillStyle = vxOK ? "#9adf9a" : "#ff6b6b";
+  ctx.fillText(`H-SPEED    ${lander.vx.toFixed(0).padStart(5)}`, 16, 62);
+  const deg = normalizeAngle(lander.angle) * 180 / Math.PI;
+  ctx.fillStyle = Math.abs(deg) <= MAX_TILT_LAND * 180 / Math.PI ? "#9adf9a" : "#ffd166";
+  ctx.fillText(`TILT       ${deg.toFixed(0).padStart(5)}°`, 16, 80);
+
+  // Fuel bar
+  ctx.fillStyle = "#9adf9a";
+  ctx.fillText("FUEL", 16, 102);
+  ctx.strokeStyle = "#9adf9a";
+  ctx.strokeRect(70, 91, 140, 12);
+  const fFrac = lander.fuel / FUEL_MAX;
+  ctx.fillStyle = fFrac > 0.3 ? "#4caf50" : "#ff6b6b";
+  ctx.fillRect(72, 93, 136 * fFrac, 8);
+  if (lander.fuel <= 0 && state === "flying") {
+    ctx.fillStyle = Math.sin(elapsed * 8) > 0 ? "#ff6b6b" : "#802020";
+    ctx.fillText("OUT OF FUEL", 220, 102);
+  }
+
+  // Controls hint
+  ctx.fillStyle = "#666";
+  ctx.textAlign = "right";
+  ctx.fillText("← → rotate   ↑ thrust", W - 16, 26);
+}
+
+function drawEndScreen() {
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(0, H / 2 - 70, W, 120);
+  ctx.textAlign = "center";
+  ctx.font = "bold 30px Courier New";
+  ctx.fillStyle = state === "landed" ? "#7CFC00" : "#ff6b6b";
+  ctx.fillText(message, W / 2, H / 2 - 20);
+  if (state === "landed") {
+    ctx.font = "16px Courier New";
+    ctx.fillStyle = "#ccc";
+    ctx.fillText(`Fuel remaining: ${lander.fuel.toFixed(0)}%`, W / 2, H / 2 + 8);
+  }
+  ctx.font = "16px Courier New";
+  ctx.fillStyle = "#aaa";
+  ctx.fillText("Press SPACE or R to fly again", W / 2, H / 2 + 34);
+}
+
+// ---------------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------------
+let lastTime = performance.now();
+function frame(now) {
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
