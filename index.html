@@ -41,7 +41,9 @@ const THRUST_ACCEL   = 58;    // px/s^2 when engine on
 const ROT_SPEED      = 1.8;   // rad/s
 const FUEL_MAX       = 100;
 const FUEL_BURN      = 12;    // units/s while engine on
-const PAD_WIDTH      = 110;   // flat landing zone width
+const PAD_WIDTH      = 110;   // flat landing zone width (round 1)
+const PAD_WIDTH_MIN  = 44;    // pad never shrinks below this
+const FUEL_MIN       = 45;    // starting fuel never drops below this
 const MAX_VY_LAND    = 28;    // max safe vertical speed (px/s)
 const MAX_VX_LAND    = 16;    // max safe horizontal speed (px/s)
 const MAX_TILT_LAND  = 0.15;  // max safe tilt at touchdown (rad, ~8.6 deg)
@@ -54,7 +56,11 @@ const keys = {};
 addEventListener("keydown", e => {
   if (["ArrowLeft", "ArrowRight", "ArrowUp", " "].includes(e.key)) e.preventDefault();
   keys[e.key] = true;
-  if (state !== "flying" && (e.key === " " || e.key === "r" || e.key === "R")) reset();
+  if (state !== "flying" && (e.key === " " || e.key === "r" || e.key === "R")) {
+    if (state === "landed") round++;
+    else { round = 1; score = 0; }
+    startRound();
+  }
 });
 addEventListener("keyup", e => { keys[e.key] = false; });
 
@@ -65,13 +71,23 @@ let terrain = [];   // list of {x, y} points, left to right
 let padX0, padX1, padY;
 let stars = [];
 let lander, state, particles, debris, message, elapsed;
+let round = 1, score = 0, roundPoints = 0;
+let padWidth = PAD_WIDTH, fuelMax = FUEL_MAX;
+
+// Each round: taller mountains, narrower pad, less starting fuel
+function applyDifficulty() {
+  padWidth = Math.max(PAD_WIDTH_MIN, PAD_WIDTH - (round - 1) * 9);
+  fuelMax = Math.max(FUEL_MIN, FUEL_MAX - (round - 1) * 7);
+}
 
 function generateTerrain() {
   terrain = [];
+  const roughness = Math.min(130, 70 + (round - 1) * 14);        // step-to-step jaggedness
+  const peakCeiling = Math.max(H * 0.18, H * 0.45 - (round - 1) * 0.035 * H); // how high peaks may reach
   // Pick where the flat pad goes (avoid extreme edges)
-  const padStart = 100 + Math.random() * (W - 200 - PAD_WIDTH);
+  const padStart = 100 + Math.random() * (W - 200 - padWidth);
   padX0 = padStart;
-  padX1 = padStart + PAD_WIDTH;
+  padX1 = padStart + padWidth;
   padY = H - 80 - Math.random() * 60;
 
   let x = 0;
@@ -88,8 +104,12 @@ function generateTerrain() {
       continue;
     }
     x += step;
-    y += (Math.random() - 0.5) * 70;
-    y = Math.max(H * 0.45, Math.min(H - 40, y));
+    y += (Math.random() - 0.5) * roughness;
+    // Higher rounds throw in sharp peaks reaching toward the ceiling
+    if (Math.random() < Math.min(0.22, (round - 1) * 0.03)) {
+      y = peakCeiling + Math.random() * 80;
+    }
+    y = Math.max(peakCeiling, Math.min(H - 40, y));
     terrain.push({ x: Math.min(x, W), y });
   }
 }
@@ -105,7 +125,8 @@ function terrainHeightAt(x) {
   return H;
 }
 
-function reset() {
+function startRound() {
+  applyDifficulty();
   generateTerrain();
   stars = Array.from({ length: 90 }, () => ({
     x: Math.random() * W,
@@ -118,12 +139,13 @@ function reset() {
     vx: (Math.random() * 2 - 1) * 25,
     vy: 10,
     angle: 0,          // 0 = upright, positive = clockwise
-    fuel: FUEL_MAX,
+    fuel: fuelMax,
     thrusting: false
   };
   particles = [];
   debris = [];
   message = "";
+  roundPoints = 0;
   elapsed = 0;
   state = "flying";
 }
@@ -212,6 +234,8 @@ function checkContact() {
   if (onPad && softV && softH && tilt <= MAX_TILT_LAND) {
     state = "landed";
     message = "THE EAGLE HAS LANDED!";
+    roundPoints = 100 * round + Math.round(lander.fuel);
+    score += roundPoints;
     lander.vx = lander.vy = 0;
     lander.angle = 0;
     lander.y = padY - LANDER_SIZE - 4;
@@ -311,7 +335,7 @@ function drawTerrain() {
 function drawPad() {
   // Pad surface
   ctx.fillStyle = "#4caf50";
-  ctx.fillRect(padX0, padY - 3, PAD_WIDTH, 5);
+  ctx.fillRect(padX0, padY - 3, padWidth, 5);
   // Blinking beacon lights
   const on = Math.sin(elapsed * 6) > 0;
   ctx.fillStyle = on ? "#7CFC00" : "#2e5d2e";
@@ -433,7 +457,7 @@ function drawHUD() {
   ctx.fillText("FUEL", 16, 102);
   ctx.strokeStyle = "#9adf9a";
   ctx.strokeRect(70, 91, 140, 12);
-  const fFrac = lander.fuel / FUEL_MAX;
+  const fFrac = lander.fuel / fuelMax;
   ctx.fillStyle = fFrac > 0.3 ? "#4caf50" : "#ff6b6b";
   ctx.fillRect(72, 93, 136 * fFrac, 8);
   if (lander.fuel <= 0 && state === "flying") {
@@ -441,9 +465,14 @@ function drawHUD() {
     ctx.fillText("OUT OF FUEL", 220, 102);
   }
 
+  // Round & score
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#9adf9a";
+  ctx.fillText(`ROUND ${round}`, W - 16, 48);
+  ctx.fillText(`SCORE ${score}`, W - 16, 66);
+
   // Controls hint
   ctx.fillStyle = "#666";
-  ctx.textAlign = "right";
   ctx.fillText("← → rotate   ↑ thrust", W - 16, 26);
 }
 
@@ -454,14 +483,18 @@ function drawEndScreen() {
   ctx.font = "bold 30px Courier New";
   ctx.fillStyle = state === "landed" ? "#7CFC00" : "#ff6b6b";
   ctx.fillText(message, W / 2, H / 2 - 20);
-  if (state === "landed") {
-    ctx.font = "16px Courier New";
-    ctx.fillStyle = "#ccc";
-    ctx.fillText(`Fuel remaining: ${lander.fuel.toFixed(0)}%`, W / 2, H / 2 + 8);
-  }
   ctx.font = "16px Courier New";
-  ctx.fillStyle = "#aaa";
-  ctx.fillText("Press SPACE or R to fly again", W / 2, H / 2 + 34);
+  if (state === "landed") {
+    ctx.fillStyle = "#ccc";
+    ctx.fillText(`+${roundPoints} points (fuel bonus ${Math.round(lander.fuel)})   TOTAL ${score}`, W / 2, H / 2 + 8);
+    ctx.fillStyle = "#aaa";
+    ctx.fillText(`Press SPACE for round ${round + 1} — smaller pad, less fuel, higher peaks`, W / 2, H / 2 + 34);
+  } else {
+    ctx.fillStyle = "#ccc";
+    ctx.fillText(`FINAL SCORE ${score} — reached round ${round}`, W / 2, H / 2 + 8);
+    ctx.fillStyle = "#aaa";
+    ctx.fillText("Press SPACE or R to start over", W / 2, H / 2 + 34);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -476,7 +509,7 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
-reset();
+startRound();
 requestAnimationFrame(frame);
 </script>
 </body>
