@@ -41,13 +41,17 @@ const THRUST_ACCEL   = 58;    // px/s^2 when engine on
 const ROT_SPEED      = 1.8;   // rad/s
 const FUEL_MAX       = 100;
 const FUEL_BURN      = 12;    // units/s while engine on
-const PAD_WIDTH      = 110;   // flat landing zone width (round 1)
-const PAD_WIDTH_MIN  = 44;    // pad never shrinks below this
-const FUEL_MIN       = 45;    // starting fuel never drops below this
+const PAD_WIDTH      = 110;   // arcade: flat landing zone width (round 1)
+const PAD_WIDTH_MIN  = 44;    // arcade: pad never shrinks below this
+const FUEL_MIN       = 45;    // arcade: starting fuel never drops below this
 const MAX_VY_LAND    = 28;    // max safe vertical speed (px/s)
 const MAX_VX_LAND    = 16;    // max safe horizontal speed (px/s)
 const MAX_TILT_LAND  = 0.15;  // max safe tilt at touchdown (rad, ~8.6 deg)
 const LANDER_SIZE    = 14;    // half-width of the lander body
+const ADV_FUEL_MAX   = 130;   // adventure: bigger tank (+30%) — pads can be far apart
+const ADV_PAD_WIDTH  = 90;    // adventure: landing pad width
+const ADV_PAD_BONUS  = 150;   // adventure: points per new pad reached
+const ADV_CAVE_GAP   = 130;   // adventure: minimum floor-to-ceiling passage
 
 // ---------------------------------------------------------------------------
 // Input
@@ -56,23 +60,75 @@ const keys = {};
 addEventListener("keydown", e => {
   if (["ArrowLeft", "ArrowRight", "ArrowUp", " "].includes(e.key)) e.preventDefault();
   keys[e.key] = true;
-  if (state !== "flying" && (e.key === " " || e.key === "r" || e.key === "R")) {
-    if (state === "landed") round++;
-    else { round = 1; score = 0; }
-    startRound();
+  if (state === "menu") {
+    if (e.key === "1") { mode = "arcade"; round = 1; score = 0; startRound(); }
+    if (e.key === "2") { mode = "adventure"; advStart(); }
+    return;
+  }
+  if (state !== "flying") {
+    if (e.key === "m" || e.key === "M") { state = "menu"; return; }
+    if (e.key === " " || e.key === "r" || e.key === "R") {
+      if (mode === "arcade") {
+        if (state === "landed") round++;
+        else { round = 1; score = 0; }
+        startRound();
+      } else {
+        advStart();
+      }
+    }
   }
 });
 addEventListener("keyup", e => { keys[e.key] = false; });
 
 // ---------------------------------------------------------------------------
-// World
+// Shared state
 // ---------------------------------------------------------------------------
-let terrain = [];   // list of {x, y} points, left to right
-let padX0, padX1, padY;
+let mode = "arcade";          // "arcade" | "adventure"
+let state = "menu";           // "menu" | "flying" | "landed" | "crashed"
 let stars = [];
-let lander, state, particles, debris, message, elapsed;
+let lander, particles = [], debris = [], message = "", elapsed = 0;
+let banner = "", bannerT = 0;
+
+// Arcade world
+let terrain = [];             // list of {x, y} points, left to right
+let padX0, padX1, padY;
 let round = 1, score = 0, roundPoints = 0;
 let padWidth = PAD_WIDTH, fuelMax = FUEL_MAX;
+
+// Adventure world
+let adv = null;
+
+function makeStars() {
+  stars = Array.from({ length: 90 }, () => ({
+    x: Math.random() * W,
+    y: Math.random() * H * 0.7,
+    r: Math.random() * 1.4 + 0.3
+  }));
+}
+
+// Linear interpolation along a polyline of {x, y} points
+function interpY(points, x) {
+  if (!points || points.length === 0) return 1e9;
+  if (x <= points[0].x) return points[0].y;
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i], b = points[i + 1];
+    if (x >= a.x && x <= b.x) {
+      return a.y + (b.y - a.y) * ((x - a.x) / ((b.x - a.x) || 1));
+    }
+  }
+  return points[points.length - 1].y;
+}
+
+function groundYAt(x) {
+  return mode === "adventure" ? interpY(adv.floor, x) : interpY(terrain, x);
+}
+function ceilYAt(x) {
+  return mode === "adventure" ? interpY(adv.ceil, x) : -1e9;
+}
+
+// ---------------------------------------------------------------------------
+// Arcade world
+// ---------------------------------------------------------------------------
 
 // Each round: taller mountains, narrower pad, less starting fuel
 function applyDifficulty() {
@@ -114,25 +170,10 @@ function generateTerrain() {
   }
 }
 
-function terrainHeightAt(x) {
-  for (let i = 0; i < terrain.length - 1; i++) {
-    const a = terrain[i], b = terrain[i + 1];
-    if (x >= a.x && x <= b.x) {
-      const t = (x - a.x) / (b.x - a.x || 1);
-      return a.y + t * (b.y - a.y);
-    }
-  }
-  return H;
-}
-
 function startRound() {
   applyDifficulty();
   generateTerrain();
-  stars = Array.from({ length: 90 }, () => ({
-    x: Math.random() * W,
-    y: Math.random() * H * 0.7,
-    r: Math.random() * 1.4 + 0.3
-  }));
+  makeStars();
   lander = {
     x: 80 + Math.random() * (W - 160),
     y: 70,
@@ -140,14 +181,119 @@ function startRound() {
     vy: 10,
     angle: 0,          // 0 = upright, positive = clockwise
     fuel: fuelMax,
-    thrusting: false
+    thrusting: false,
+    onGround: false
   };
   particles = [];
   debris = [];
   message = "";
+  banner = ""; bannerT = 0;
   roundPoints = 0;
   elapsed = 0;
   state = "flying";
+}
+
+// ---------------------------------------------------------------------------
+// Adventure world — endless terrain scrolling right, pads refuel, caves
+// ---------------------------------------------------------------------------
+function advStart() {
+  score = 0;
+  adv = {
+    floor: [{ x: -700, y: 500 }],
+    ceil:  [{ x: -700, y: -700 }],
+    pads: [],
+    nextPadX: 160,
+    padCount: 0,
+    padsLanded: 0,
+    inCave: false,
+    caveEnd: 0,
+    caveGap: 0,
+    ceilY: -700,
+    startX: 0
+  };
+  ensureWorld(W * 2);
+  const p = adv.pads[0];
+  p.visited = true; // no points for the pad you start on
+  adv.startX = (p.x0 + p.x1) / 2;
+  lander = {
+    x: adv.startX,
+    y: p.y - LANDER_SIZE - 4,
+    vx: 0, vy: 0,
+    angle: 0,
+    fuel: ADV_FUEL_MAX,
+    thrusting: false,
+    onGround: true
+  };
+  makeStars();
+  particles = [];
+  debris = [];
+  message = "";
+  banner = "LIFT OFF WHEN READY — HEAD RIGHT →"; bannerT = 4;
+  elapsed = 0;
+  state = "flying";
+}
+
+function ensureWorld(upToX) {
+  let last = adv.floor[adv.floor.length - 1];
+  while (last.x < upToX) {
+    let x = last.x, y = last.y;
+
+    if (x >= adv.nextPadX) {
+      // Flat landing pad (keeps the current ceiling, so pads can sit in caves)
+      adv.floor.push({ x: x + ADV_PAD_WIDTH, y });
+      adv.ceil.push({ x: x + ADV_PAD_WIDTH, y: adv.ceilY });
+      adv.padCount++;
+      adv.pads.push({ x0: x, x1: x + ADV_PAD_WIDTH, y, id: adv.padCount, visited: false });
+      // Pads spread out a little as you progress
+      adv.nextPadX = x + 900 + Math.random() * 600 + Math.min(600, adv.padCount * 40);
+      last = adv.floor[adv.floor.length - 1];
+      continue;
+    }
+
+    const step = 20 + Math.random() * 25;
+    x += step;
+    y += (Math.random() - 0.5) * 80;
+    y = Math.max(180, Math.min(600, y));
+    adv.floor.push({ x, y });
+
+    // Cave sections: the rock ceiling descends to form a corridor
+    if (!adv.inCave && x > 1400 && Math.random() < 0.02 + Math.min(0.045, x / 60000)) {
+      adv.inCave = true;
+      adv.caveEnd = x + 400 + Math.random() * 500;
+      adv.caveGap = ADV_CAVE_GAP + 20 + Math.random() * 60;
+    }
+    if (adv.inCave && x > adv.caveEnd) adv.inCave = false;
+    const targetCeil = adv.inCave ? y - adv.caveGap : -700;
+    const delta = Math.max(-70, Math.min(70, targetCeil - adv.ceilY));
+    adv.ceilY = Math.min(adv.ceilY + delta, y - ADV_CAVE_GAP); // never pinch the passage shut
+    adv.ceil.push({ x, y: adv.ceilY });
+
+    last = adv.floor[adv.floor.length - 1];
+  }
+}
+
+function pruneWorld() {
+  const cut = lander.x - W * 1.5;
+  while (adv.floor.length > 2 && adv.floor[1].x < cut) adv.floor.shift();
+  while (adv.ceil.length > 2 && adv.ceil[1].x < cut) adv.ceil.shift();
+  while (adv.pads.length > 0 && adv.pads[0].x1 < cut) adv.pads.shift();
+}
+
+function landOnPad(pad) {
+  lander.onGround = true;
+  lander.vx = lander.vy = 0;
+  lander.angle = 0;
+  lander.y = pad.y - LANDER_SIZE - 4;
+  lander.fuel = ADV_FUEL_MAX;
+  if (!pad.visited) {
+    pad.visited = true;
+    adv.padsLanded++;
+    score += ADV_PAD_BONUS;
+    banner = `PAD ${pad.id} — REFUELED  +${ADV_PAD_BONUS}`;
+  } else {
+    banner = "REFUELED";
+  }
+  bannerT = 2.5;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,27 +301,52 @@ function startRound() {
 // ---------------------------------------------------------------------------
 function update(dt) {
   elapsed += dt;
-  if (state === "flying") {
-    if (keys["ArrowLeft"])  lander.angle -= ROT_SPEED * dt;
-    if (keys["ArrowRight"]) lander.angle += ROT_SPEED * dt;
+  if (bannerT > 0) bannerT -= dt;
 
-    lander.thrusting = !!keys["ArrowUp"] && lander.fuel > 0;
-    if (lander.thrusting) {
-      lander.vx += Math.sin(lander.angle) * THRUST_ACCEL * dt;
-      lander.vy -= Math.cos(lander.angle) * THRUST_ACCEL * dt;
-      lander.fuel = Math.max(0, lander.fuel - FUEL_BURN * dt);
-      spawnExhaust();
+  if (state === "flying") {
+    if (mode === "adventure") {
+      ensureWorld(lander.x + W * 1.5);
+      pruneWorld();
     }
 
-    lander.vy += GRAVITY * dt;
-    lander.x += lander.vx * dt;
-    lander.y += lander.vy * dt;
+    if (lander.onGround) {
+      // Resting on a pad: wait for the engine to lift off again
+      lander.thrusting = false;
+      if (keys["ArrowUp"] && lander.fuel > 0) {
+        lander.onGround = false;
+        lander.vy = -30;
+      }
+    } else {
+      if (keys["ArrowLeft"])  lander.angle -= ROT_SPEED * dt;
+      if (keys["ArrowRight"]) lander.angle += ROT_SPEED * dt;
 
-    // Wrap horizontally so the ship never leaves the screen
-    if (lander.x < 0) lander.x += W;
-    if (lander.x > W) lander.x -= W;
+      lander.thrusting = !!keys["ArrowUp"] && lander.fuel > 0;
+      if (lander.thrusting) {
+        lander.vx += Math.sin(lander.angle) * THRUST_ACCEL * dt;
+        lander.vy -= Math.cos(lander.angle) * THRUST_ACCEL * dt;
+        lander.fuel = Math.max(0, lander.fuel - FUEL_BURN * dt);
+        spawnExhaust();
+      }
 
-    checkContact();
+      lander.vy += GRAVITY * dt;
+      lander.x += lander.vx * dt;
+      lander.y += lander.vy * dt;
+
+      if (mode === "arcade") {
+        // Wrap horizontally so the ship never leaves the screen
+        if (lander.x < 0) lander.x += W;
+        if (lander.x > W) lander.x -= W;
+        checkContact();
+      } else {
+        // The world only extends rightward
+        const leftEdge = adv.floor[0].x + 40;
+        if (lander.x < leftEdge) {
+          lander.x = leftEdge;
+          if (lander.vx < 0) lander.vx = 0;
+        }
+        advCheckContact();
+      }
+    }
   }
 
   // Particles
@@ -191,7 +362,7 @@ function update(dt) {
     d.x += d.vx * dt;
     d.y += d.vy * dt;
     d.rot += d.vr * dt;
-    if (d.y > terrainHeightAt(d.x) - 2) { d.vy *= -0.35; d.vx *= 0.7; d.y = terrainHeightAt(d.x) - 2; }
+    if (d.y > groundYAt(d.x) - 2) { d.vy *= -0.35; d.vx *= 0.7; d.y = groundYAt(d.x) - 2; }
   }
 }
 
@@ -211,20 +382,21 @@ function spawnExhaust() {
   }
 }
 
-function checkContact() {
-  // Legs are at the two bottom corners of the lander
-  const legOffsets = [
-    { dx: -LANDER_SIZE, dy: LANDER_SIZE + 4 },
-    { dx:  LANDER_SIZE, dy: LANDER_SIZE + 4 }
-  ];
+function landerPoint(dx, dy) {
   const cos = Math.cos(lander.angle), sin = Math.sin(lander.angle);
-  let touched = false;
-  for (const leg of legOffsets) {
-    const lx = lander.x + leg.dx * cos - leg.dy * sin;
-    const ly = lander.y + leg.dx * sin + leg.dy * cos;
-    if (ly >= terrainHeightAt(lx)) { touched = true; break; }
+  return { x: lander.x + dx * cos - dy * sin, y: lander.y + dx * sin + dy * cos };
+}
+
+function legsTouchFloor(floorPoints) {
+  for (const [dx, dy] of [[-LANDER_SIZE, LANDER_SIZE + 4], [LANDER_SIZE, LANDER_SIZE + 4]]) {
+    const p = landerPoint(dx, dy);
+    if (p.y >= interpY(floorPoints, p.x)) return true;
   }
-  if (!touched) return;
+  return false;
+}
+
+function checkContact() {
+  if (!legsTouchFloor(terrain)) return;
 
   const onPad = lander.x - LANDER_SIZE * 0.8 >= padX0 && lander.x + LANDER_SIZE * 0.8 <= padX1;
   const tilt = Math.abs(normalizeAngle(lander.angle));
@@ -245,6 +417,38 @@ function checkContact() {
     else if (!softV)       message = "CRASHED — DESCENT TOO FAST";
     else if (!softH)       message = "CRASHED — DRIFTING TOO FAST";
     else                   message = "CRASHED — TOO MUCH TILT";
+    explode();
+  }
+}
+
+function advCheckContact() {
+  // Cave roof: touching it at any speed is fatal
+  for (const [dx, dy] of [[0, -16], [-9, -9], [9, -9]]) {
+    const p = landerPoint(dx, dy);
+    if (p.y <= interpY(adv.ceil, p.x)) {
+      state = "crashed";
+      message = "CRASHED — HIT THE CAVE ROOF";
+      explode();
+      return;
+    }
+  }
+
+  if (!legsTouchFloor(adv.floor)) return;
+
+  const pad = adv.pads.find(p =>
+    lander.x - LANDER_SIZE * 0.8 >= p.x0 && lander.x + LANDER_SIZE * 0.8 <= p.x1);
+  const tilt = Math.abs(normalizeAngle(lander.angle));
+  const softV = lander.vy >= 0 && lander.vy <= MAX_VY_LAND;
+  const softH = Math.abs(lander.vx) <= MAX_VX_LAND;
+
+  if (pad && softV && softH && tilt <= MAX_TILT_LAND) {
+    landOnPad(pad);
+  } else {
+    state = "crashed";
+    if (!pad)         message = "CRASHED — NOT A LANDING PAD";
+    else if (!softV)  message = "CRASHED — DESCENT TOO FAST";
+    else if (!softH)  message = "CRASHED — DRIFTING TOO FAST";
+    else              message = "CRASHED — TOO MUCH TILT";
     explode();
   }
 }
@@ -285,11 +489,19 @@ function draw() {
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, W, H);
 
-  // Stars
+  let camX = 0, camY = 0;
+  if (mode === "adventure" && lander && state !== "menu") {
+    camX = lander.x - W * 0.5;
+    camY = Math.min(90, lander.y - H * 0.55);
+  }
+
+  // Stars (slight parallax in adventure)
   ctx.fillStyle = "#fff";
   for (const s of stars) {
+    const sx = ((s.x - camX * 0.15) % W + W) % W;
+    const sy = ((s.y - camY * 0.15) % (H * 0.7) + H * 0.7) % (H * 0.7);
     ctx.globalAlpha = 0.4 + 0.6 * Math.abs(Math.sin(elapsed * 0.7 + s.x));
-    ctx.fillRect(s.x, s.y, s.r, s.r);
+    ctx.fillRect(sx, sy, s.r, s.r);
   }
   ctx.globalAlpha = 1;
 
@@ -305,13 +517,50 @@ function draw() {
   ctx.beginPath(); ctx.ellipse(W - 108, 100, 9, 6, -0.4, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 
-  drawTerrain();
-  drawPad();
+  if (state === "menu") { drawMenu(); return; }
+
+  ctx.save();
+  ctx.translate(-camX, -camY);
+  if (mode === "arcade") {
+    drawTerrain();
+    drawPad(padX0, padX1, padY, false, "LANDING ZONE");
+  } else {
+    drawAdvTerrain(camX, camY);
+    for (const p of adv.pads) {
+      if (p.x1 < camX - 60 || p.x0 > camX + W + 60) continue;
+      drawPad(p.x0, p.x1, p.y, p.visited, `PAD ${p.id}`);
+    }
+  }
   drawParticles();
   drawDebris();
   if (state !== "crashed") drawLander();
+  ctx.restore();
+
   drawHUD();
+  drawBanner();
   if (state !== "flying") drawEndScreen();
+}
+
+function drawMenu() {
+  ctx.textAlign = "center";
+  ctx.font = "bold 42px Courier New";
+  ctx.fillStyle = "#e8e8f0";
+  ctx.fillText("APOLLO LUNAR LANDER", W / 2, H * 0.32);
+
+  ctx.font = "18px Courier New";
+  ctx.fillStyle = "#9adf9a";
+  ctx.fillText("1 — ARCADE", W / 2, H * 0.48);
+  ctx.fillStyle = "#888";
+  ctx.fillText("land on the pad, each round gets harder", W / 2, H * 0.52);
+
+  ctx.fillStyle = "#9adf9a";
+  ctx.fillText("2 — ADVENTURE", W / 2, H * 0.62);
+  ctx.fillStyle = "#888";
+  ctx.fillText("journey right from pad to pad, refuel at each — beware the caves", W / 2, H * 0.66);
+
+  ctx.fillStyle = "#666";
+  ctx.font = "14px Courier New";
+  ctx.fillText("← → rotate    ↑ thrust", W / 2, H * 0.8);
 }
 
 function drawTerrain() {
@@ -332,24 +581,62 @@ function drawTerrain() {
   ctx.stroke();
 }
 
-function drawPad() {
-  // Pad surface
-  ctx.fillStyle = "#4caf50";
-  ctx.fillRect(padX0, padY - 3, padWidth, 5);
-  // Blinking beacon lights
-  const on = Math.sin(elapsed * 6) > 0;
-  ctx.fillStyle = on ? "#7CFC00" : "#2e5d2e";
-  for (const bx of [padX0 + 6, padX1 - 6]) {
-    ctx.beginPath();
-    ctx.arc(bx, padY - 8, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillRect(bx - 1, padY - 6, 2, 6);
+function drawAdvTerrain(camX, camY) {
+  const bottom = camY + H + 80;
+  const top = camY - 80;
+
+  // Floor
+  ctx.beginPath();
+  ctx.moveTo(adv.floor[0].x, bottom);
+  for (const p of adv.floor) ctx.lineTo(p.x, p.y);
+  ctx.lineTo(adv.floor[adv.floor.length - 1].x, bottom);
+  ctx.closePath();
+  ctx.fillStyle = "#2a2a2e";
+  ctx.fill();
+  ctx.beginPath();
+  for (let i = 0; i < adv.floor.length; i++) {
+    const p = adv.floor[i];
+    i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
   }
-  // "LANDING ZONE" label
-  ctx.fillStyle = "#4caf50";
+  ctx.strokeStyle = "#8a8a92";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Cave ceiling (hangs from above; far offscreen outside caves)
+  ctx.beginPath();
+  ctx.moveTo(adv.ceil[0].x, top);
+  for (const p of adv.ceil) ctx.lineTo(p.x, p.y);
+  ctx.lineTo(adv.ceil[adv.ceil.length - 1].x, top);
+  ctx.closePath();
+  ctx.fillStyle = "#26262b";
+  ctx.fill();
+  ctx.beginPath();
+  for (let i = 0; i < adv.ceil.length; i++) {
+    const p = adv.ceil[i];
+    i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+  }
+  ctx.strokeStyle = "#77777f";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+function drawPad(x0, x1, y, visited, label) {
+  const w = x1 - x0;
+  ctx.fillStyle = visited ? "#2e5d2e" : "#4caf50";
+  ctx.fillRect(x0, y - 3, w, 5);
+  // Blinking beacon lights (steady dim when already visited)
+  const on = visited ? false : Math.sin(elapsed * 6) > 0;
+  ctx.fillStyle = on ? "#7CFC00" : "#2e5d2e";
+  for (const bx of [x0 + 6, x1 - 6]) {
+    ctx.beginPath();
+    ctx.arc(bx, y - 8, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillRect(bx - 1, y - 6, 2, 6);
+  }
+  ctx.fillStyle = visited ? "#2e5d2e" : "#4caf50";
   ctx.font = "10px Courier New";
   ctx.textAlign = "center";
-  ctx.fillText("LANDING ZONE", (padX0 + padX1) / 2, padY + 16);
+  ctx.fillText(label, (x0 + x1) / 2, y + 16);
 }
 
 function drawLander() {
@@ -436,7 +723,8 @@ function drawDebris() {
 }
 
 function drawHUD() {
-  const altitude = Math.max(0, terrainHeightAt(lander.x) - lander.y - LANDER_SIZE - 4);
+  if (!lander) return;
+  const altitude = Math.max(0, groundYAt(lander.x) - lander.y - LANDER_SIZE - 4);
   const vxOK = Math.abs(lander.vx) <= MAX_VX_LAND;
   const vyOK = Math.abs(lander.vy) <= MAX_VY_LAND;
 
@@ -453,27 +741,48 @@ function drawHUD() {
   ctx.fillText(`TILT       ${deg.toFixed(0).padStart(5)}°`, 16, 80);
 
   // Fuel bar
+  const cap = mode === "adventure" ? ADV_FUEL_MAX : fuelMax;
   ctx.fillStyle = "#9adf9a";
   ctx.fillText("FUEL", 16, 102);
   ctx.strokeStyle = "#9adf9a";
   ctx.strokeRect(70, 91, 140, 12);
-  const fFrac = lander.fuel / fuelMax;
+  const fFrac = lander.fuel / cap;
   ctx.fillStyle = fFrac > 0.3 ? "#4caf50" : "#ff6b6b";
   ctx.fillRect(72, 93, 136 * fFrac, 8);
-  if (lander.fuel <= 0 && state === "flying") {
+  if (lander.fuel <= 0 && state === "flying" && !lander.onGround) {
     ctx.fillStyle = Math.sin(elapsed * 8) > 0 ? "#ff6b6b" : "#802020";
     ctx.fillText("OUT OF FUEL", 220, 102);
   }
 
-  // Round & score
+  // Mode-specific readouts
   ctx.textAlign = "right";
   ctx.fillStyle = "#9adf9a";
-  ctx.fillText(`ROUND ${round}`, W - 16, 48);
-  ctx.fillText(`SCORE ${score}`, W - 16, 66);
+  if (mode === "arcade") {
+    ctx.fillText(`ROUND ${round}`, W - 16, 48);
+    ctx.fillText(`SCORE ${score}`, W - 16, 66);
+  } else {
+    ctx.fillText(`SCORE ${score}`, W - 16, 48);
+    ctx.fillText(`PADS  ${adv.padsLanded}`, W - 16, 66);
+    ctx.fillText(`DIST  ${advDistance()} m`, W - 16, 84);
+  }
 
   // Controls hint
   ctx.fillStyle = "#666";
   ctx.fillText("← → rotate   ↑ thrust", W - 16, 26);
+}
+
+function advDistance() {
+  return Math.max(0, Math.round((lander.x - adv.startX) / 10));
+}
+
+function drawBanner() {
+  if (bannerT <= 0) return;
+  ctx.textAlign = "center";
+  ctx.font = "bold 18px Courier New";
+  ctx.globalAlpha = Math.min(1, bannerT);
+  ctx.fillStyle = "#7CFC00";
+  ctx.fillText(banner, W / 2, 60);
+  ctx.globalAlpha = 1;
 }
 
 function drawEndScreen() {
@@ -484,16 +793,23 @@ function drawEndScreen() {
   ctx.fillStyle = state === "landed" ? "#7CFC00" : "#ff6b6b";
   ctx.fillText(message, W / 2, H / 2 - 20);
   ctx.font = "16px Courier New";
-  if (state === "landed") {
-    ctx.fillStyle = "#ccc";
-    ctx.fillText(`+${roundPoints} points (fuel bonus ${Math.round(lander.fuel)})   TOTAL ${score}`, W / 2, H / 2 + 8);
-    ctx.fillStyle = "#aaa";
-    ctx.fillText(`Press SPACE for round ${round + 1} — smaller pad, less fuel, higher peaks`, W / 2, H / 2 + 34);
+  if (mode === "arcade") {
+    if (state === "landed") {
+      ctx.fillStyle = "#ccc";
+      ctx.fillText(`+${roundPoints} points (fuel bonus ${Math.round(lander.fuel)})   TOTAL ${score}`, W / 2, H / 2 + 8);
+      ctx.fillStyle = "#aaa";
+      ctx.fillText(`Press SPACE for round ${round + 1} — smaller pad, less fuel, higher peaks`, W / 2, H / 2 + 34);
+    } else {
+      ctx.fillStyle = "#ccc";
+      ctx.fillText(`FINAL SCORE ${score} — reached round ${round}`, W / 2, H / 2 + 8);
+      ctx.fillStyle = "#aaa";
+      ctx.fillText("SPACE to start over — M for menu", W / 2, H / 2 + 34);
+    }
   } else {
     ctx.fillStyle = "#ccc";
-    ctx.fillText(`FINAL SCORE ${score} — reached round ${round}`, W / 2, H / 2 + 8);
+    ctx.fillText(`FINAL SCORE ${score} — ${adv.padsLanded} pads, ${advDistance()} m travelled`, W / 2, H / 2 + 8);
     ctx.fillStyle = "#aaa";
-    ctx.fillText("Press SPACE or R to start over", W / 2, H / 2 + 34);
+    ctx.fillText("SPACE to retry — M for menu", W / 2, H / 2 + 34);
   }
 }
 
@@ -509,7 +825,7 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
-startRound();
+makeStars();
 requestAnimationFrame(frame);
 </script>
 </body>
