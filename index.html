@@ -51,6 +51,7 @@ const LANDER_SIZE    = 14;    // half-width of the lander body
 const ADV_FUEL_MAX   = 180;   // adventure: bigger tank (+80%) — pads can be far apart
 const ADV_PAD_WIDTH  = 90;    // adventure: landing pad width
 const ADV_PAD_BONUS  = 150;   // adventure: points per new pad reached
+const ADV_SKIP_BONUS = 200;   // adventure: extra points per pad flown past without landing
 const ADV_CAVE_GAP   = 130;   // adventure: minimum floor-to-ceiling passage
 
 // ---------------------------------------------------------------------------
@@ -205,6 +206,7 @@ function advStart() {
     nextPadX: 160,
     padCount: 0,
     padsLanded: 0,
+    lastPadId: 1,   // id of the pad the ship last rested on (the start pad)
     inCave: false,
     caveEnd: 0,
     caveGap: 0,
@@ -288,11 +290,16 @@ function landOnPad(pad) {
   if (!pad.visited) {
     pad.visited = true;
     adv.padsLanded++;
-    score += ADV_PAD_BONUS;
+    const skipped = Math.max(0, pad.id - adv.lastPadId - 1);
+    score += ADV_PAD_BONUS + skipped * ADV_SKIP_BONUS;
     banner = `PAD ${pad.id} — REFUELED  +${ADV_PAD_BONUS}`;
+    if (skipped > 0) {
+      banner += `   SKIPPED ${skipped} PAD${skipped > 1 ? "S" : ""}  +${skipped * ADV_SKIP_BONUS}`;
+    }
   } else {
     banner = "REFUELED";
   }
+  adv.lastPadId = Math.max(adv.lastPadId, pad.id);
   bannerT = 2.5;
 }
 
