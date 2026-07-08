@@ -61,6 +61,7 @@ const keys = {};
 addEventListener("keydown", e => {
   if (["ArrowLeft", "ArrowRight", "ArrowUp", " "].includes(e.key)) e.preventDefault();
   keys[e.key] = true;
+  if (e.key === "t" || e.key === "T") showTrajectory = !showTrajectory;
   if (state === "menu") {
     if (e.key === "1") { mode = "arcade"; round = 1; score = 0; startRound(); }
     if (e.key === "2") { mode = "adventure"; advStart(); }
@@ -89,6 +90,7 @@ let state = "menu";           // "menu" | "flying" | "landed" | "crashed"
 let stars = [];
 let lander, particles = [], debris = [], message = "", elapsed = 0;
 let banner = "", bannerT = 0;
+let showTrajectory = false;   // 't' toggles the no-thrust trajectory helper
 
 // Arcade world
 let terrain = [];             // list of {x, y} points, left to right
@@ -540,6 +542,7 @@ function draw() {
   }
   drawParticles();
   drawDebris();
+  drawTrajectory();
   if (state !== "crashed") drawLander();
   ctx.restore();
 
@@ -567,7 +570,7 @@ function drawMenu() {
 
   ctx.fillStyle = "#666";
   ctx.font = "14px Courier New";
-  ctx.fillText("← → rotate    ↑ thrust", W / 2, H * 0.8);
+  ctx.fillText("← → rotate    ↑ thrust    T trajectory helper", W / 2, H * 0.8);
 }
 
 function drawTerrain() {
@@ -644,6 +647,54 @@ function drawPad(x0, x1, y, visited, label) {
   ctx.font = "10px Courier New";
   ctx.textAlign = "center";
   ctx.fillText(label, (x0 + x1) / 2, y + 16);
+}
+
+// Dashed preview of the coasting (no-thrust) path, with an X at the
+// predicted impact — green if the impact speeds would be survivable
+function drawTrajectory() {
+  if (!showTrajectory || state !== "flying" || lander.onGround) return;
+  const floorPts = mode === "adventure" ? adv.floor : terrain;
+  let px = lander.x, py = lander.y, vx = lander.vx, vy = lander.vy;
+  const dt = 1 / 60;
+  let impact = null, safe = false;
+
+  ctx.beginPath();
+  ctx.moveTo(px, py);
+  for (let i = 0; i < 8 * 60; i++) {
+    vy += GRAVITY * dt;
+    px += vx * dt;
+    py += vy * dt;
+    if (mode === "arcade") {
+      // Follow the ship's horizontal wrap; break the stroke at the seam
+      if (px < 0)      { px += W; ctx.moveTo(px, py); }
+      else if (px > W) { px -= W; ctx.moveTo(px, py); }
+    }
+    if (i % 3 === 0) ctx.lineTo(px, py);
+    if (mode === "adventure" && py <= interpY(adv.ceil, px) + 16) {
+      impact = { x: px, y: py };
+      safe = false; // hitting the cave roof is always fatal
+      break;
+    }
+    if (py >= interpY(floorPts, px) - (LANDER_SIZE + 4)) {
+      impact = { x: px, y: py };
+      safe = Math.abs(vy) <= MAX_VY_LAND && Math.abs(vx) <= MAX_VX_LAND;
+      break;
+    }
+  }
+  ctx.setLineDash([6, 6]);
+  ctx.strokeStyle = "rgba(102, 217, 255, 0.7)";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  if (impact) {
+    ctx.strokeStyle = safe ? "#7CFC00" : "#ff6b6b";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(impact.x - 6, impact.y - 6); ctx.lineTo(impact.x + 6, impact.y + 6);
+    ctx.moveTo(impact.x - 6, impact.y + 6); ctx.lineTo(impact.x + 6, impact.y - 6);
+    ctx.stroke();
+  }
 }
 
 function drawLander() {
@@ -775,7 +826,7 @@ function drawHUD() {
 
   // Controls hint
   ctx.fillStyle = "#666";
-  ctx.fillText("← → rotate   ↑ thrust", W - 16, 26);
+  ctx.fillText(`← → rotate   ↑ thrust   T trajectory ${showTrajectory ? "ON" : "off"}`, W - 16, 26);
 }
 
 function advDistance() {
