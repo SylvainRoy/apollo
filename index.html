@@ -52,7 +52,7 @@ const ADV_FUEL_MAX   = 180;   // adventure: bigger tank (+80%) — pads can be f
 const ADV_PAD_WIDTH  = 90;    // adventure: landing pad width
 const ADV_PAD_BONUS  = 150;   // adventure: points per new pad reached
 const ADV_SKIP_BONUS = 200;   // adventure: extra points per pad flown past without landing
-const ADV_CAVE_GAP   = 130;   // adventure: minimum floor-to-ceiling passage
+const ADV_CAVE_GAP_MIN = 95;  // adventure: tightest tunnel passage far into the journey
 
 // ---------------------------------------------------------------------------
 // Input
@@ -248,15 +248,17 @@ function ensureWorld(upToX) {
       adv.ceil.push({ x: x + ADV_PAD_WIDTH, y: adv.ceilY });
       adv.padCount++;
       adv.pads.push({ x0: x, x1: x + ADV_PAD_WIDTH, y, id: adv.padCount, visited: false });
-      // Pads spread out a little as you progress
-      adv.nextPadX = x + 900 + Math.random() * 600 + Math.min(600, adv.padCount * 40);
+      // Pads spread out as you progress
+      adv.nextPadX = x + 900 + Math.random() * 600 + Math.min(1200, Math.max(0, x) * 0.04);
       last = adv.floor[adv.floor.length - 1];
       continue;
     }
 
     const step = 20 + Math.random() * 25;
     x += step;
-    y += (Math.random() - 0.5) * 80;
+    // Ground gets less smooth with distance
+    const roughness = 80 + Math.min(70, Math.max(0, x) / 500);
+    y += (Math.random() - 0.5) * roughness;
     y = Math.max(180, Math.min(600, y));
     adv.floor.push({ x, y });
 
@@ -264,12 +266,14 @@ function ensureWorld(upToX) {
     if (!adv.inCave && x > 1400 && Math.random() < 0.02 + Math.min(0.045, x / 60000)) {
       adv.inCave = true;
       adv.caveEnd = x + 400 + Math.random() * 500;
-      adv.caveGap = ADV_CAVE_GAP + 20 + Math.random() * 60;
+      // Tunnels get tighter with distance
+      const shrink = Math.min(60, x / 700);
+      adv.caveGap = Math.max(ADV_CAVE_GAP_MIN, 150 + Math.random() * 60 - shrink);
     }
     if (adv.inCave && x > adv.caveEnd) adv.inCave = false;
     const targetCeil = adv.inCave ? y - adv.caveGap : -700;
     const delta = Math.max(-70, Math.min(70, targetCeil - adv.ceilY));
-    adv.ceilY = Math.min(adv.ceilY + delta, y - ADV_CAVE_GAP); // never pinch the passage shut
+    adv.ceilY = Math.min(adv.ceilY + delta, y - ADV_CAVE_GAP_MIN); // never pinch the passage shut
     adv.ceil.push({ x, y: adv.ceilY });
 
     last = adv.floor[adv.floor.length - 1];
