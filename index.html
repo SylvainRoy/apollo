@@ -253,7 +253,7 @@ function ensureWorld(upToX) {
       adv.padCount++;
       adv.pads.push({ x0: x, x1: x + ADV_PAD_WIDTH, y, id: adv.padCount, visited: false });
       // Pads spread out as you progress
-      adv.nextPadX = x + 900 + Math.random() * 600 + Math.min(1600, Math.max(0, x) * 0.05);
+      adv.nextPadX = x + 900 + Math.random() * 600 + Math.min(1600, Math.max(0, x) * 0.025);
       last = adv.floor[adv.floor.length - 1];
       continue;
     }
