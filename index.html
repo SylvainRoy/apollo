@@ -62,6 +62,7 @@ addEventListener("keydown", e => {
   if (["ArrowLeft", "ArrowRight", "ArrowUp", " "].includes(e.key)) e.preventDefault();
   keys[e.key] = true;
   if (e.key === "t" || e.key === "T") showTrajectory = !showTrajectory;
+  if (e.key === "r" || e.key === "R") showPathTaken = !showPathTaken;
   if ((e.key === "p" || e.key === "P") && state === "flying") paused = !paused;
   if (state === "menu") {
     if (e.key === "1") { mode = "arcade"; round = 1; score = 0; startRound(); }
@@ -70,7 +71,7 @@ addEventListener("keydown", e => {
   }
   if (state !== "flying") {
     if (e.key === "m" || e.key === "M") { state = "menu"; return; }
-    if (e.key === " " || e.key === "r" || e.key === "R") {
+    if (e.key === " ") {
       if (mode === "arcade") {
         if (state === "landed") round++;
         else { round = 1; score = 0; }
@@ -92,6 +93,8 @@ let stars = [];
 let lander, particles = [], debris = [], message = "", elapsed = 0;
 let banner = "", bannerT = 0;
 let showTrajectory = false;   // 't' toggles the no-thrust trajectory helper
+let showPathTaken = false;    // 'r' toggles the historical path trace helper
+let pathHistory = [];         // stores {x, y} coordinates of the path taken
 let paused = false;           // 'p' toggles pause during flight
 
 // Arcade world
@@ -190,6 +193,7 @@ function startRound() {
     onGround: false
   };
   particles = [];
+  pathHistory = [];
   debris = [];
   message = "";
   banner = ""; bannerT = 0;
@@ -233,6 +237,7 @@ function advStart() {
   };
   makeStars();
   particles = [];
+  pathHistory = [];
   debris = [];
   message = "";
   banner = "LIFT OFF WHEN READY — HEAD RIGHT →"; bannerT = 4;
@@ -364,6 +369,7 @@ function update(dt) {
         }
         advCheckContact();
       }
+      pathHistory.push({ x: lander.x, y: lander.y });
     }
   }
 
@@ -552,6 +558,7 @@ function draw() {
   drawParticles();
   drawDebris();
   drawTrajectory();
+  drawPathHistory();
   if (state !== "crashed") drawLander();
   ctx.restore();
 
@@ -592,7 +599,7 @@ function drawMenu() {
 
   ctx.fillStyle = "#666";
   ctx.font = "14px Courier New";
-  ctx.fillText("← → rotate    ↑ thrust    T trajectory helper    P pause", W / 2, H * 0.8);
+  ctx.fillText("← → rotate   ↑ thrust   T trajectory helper   R path tracer   P pause", W / 2, H * 0.8);
 }
 
 function drawTerrain() {
@@ -717,6 +724,31 @@ function drawTrajectory() {
     ctx.moveTo(impact.x - 6, impact.y + 6); ctx.lineTo(impact.x + 6, impact.y - 6);
     ctx.stroke();
   }
+}
+
+function drawPathHistory() {
+  if (!showPathTaken || pathHistory.length < 2) return;
+
+  ctx.beginPath();
+  ctx.moveTo(pathHistory[0].x, pathHistory[0].y);
+  for (let i = 1; i < pathHistory.length; i++) {
+    const prev = pathHistory[i - 1];
+    const curr = pathHistory[i];
+    if (mode === "arcade") {
+      if (Math.abs(curr.x - prev.x) > W / 2) {
+        ctx.moveTo(curr.x, curr.y);
+      } else {
+        ctx.lineTo(curr.x, curr.y);
+      }
+    } else {
+      ctx.lineTo(curr.x, curr.y);
+    }
+  }
+  ctx.strokeStyle = "hsla(270, 90%, 65%, 0.8)";
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.stroke();
 }
 
 function drawLander() {
@@ -848,7 +880,7 @@ function drawHUD() {
 
   // Controls hint
   ctx.fillStyle = "#666";
-  ctx.fillText(`← → rotate   ↑ thrust   T trajectory ${showTrajectory ? "ON" : "off"}`, W - 16, 26);
+  ctx.fillText(`← → rotate   ↑ thrust   T trajectory ${showTrajectory ? "ON" : "off"}   R path ${showPathTaken ? "ON" : "off"}`, W - 16, 26);
 }
 
 function advDistance() {
