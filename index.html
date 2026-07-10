@@ -95,6 +95,7 @@ let banner = "", bannerT = 0;
 let showTrajectory = false;   // 't' toggles the no-thrust trajectory helper
 let showPathTaken = false;    // 'r' toggles the historical path trace helper
 let pathHistory = [];         // stores {x, y} coordinates of the path taken
+let reviewScrollX = 0;        // scroll offset for reviewing trajectory after a crash
 let paused = false;           // 'p' toggles pause during flight
 
 // Arcade world
@@ -194,6 +195,7 @@ function startRound() {
   };
   particles = [];
   pathHistory = [];
+  reviewScrollX = 0;
   debris = [];
   message = "";
   banner = ""; bannerT = 0;
@@ -238,6 +240,7 @@ function advStart() {
   makeStars();
   particles = [];
   pathHistory = [];
+  reviewScrollX = 0;
   debris = [];
   message = "";
   banner = "LIFT OFF WHEN READY — HEAD RIGHT →"; bannerT = 4;
@@ -325,6 +328,12 @@ function update(dt) {
   if (paused) return;
   elapsed += dt;
   if (bannerT > 0) bannerT -= dt;
+
+  if (state === "crashed") {
+    const scrollSpeed = 500; // pixels per second
+    if (keys["ArrowLeft"])  reviewScrollX -= scrollSpeed * dt;
+    if (keys["ArrowRight"]) reviewScrollX += scrollSpeed * dt;
+  }
 
   if (state === "flying") {
     if (mode === "adventure") {
@@ -517,6 +526,17 @@ function draw() {
   if (mode === "adventure" && lander && state !== "menu") {
     camX = lander.x - W * 0.5;
     camY = Math.min(90, lander.y - H * 0.55);
+  }
+
+  if (state === "crashed") {
+    camX += reviewScrollX;
+    if (mode === "arcade") {
+      camX = Math.max(-100, Math.min(100, camX));
+    } else if (adv) {
+      const minCam = Math.max(0, adv.startX - 100);
+      const maxCam = Math.max(minCam, lander.x - W * 0.5);
+      camX = Math.max(minCam, Math.min(maxCam, camX));
+    }
   }
 
   // Stars (slight parallax in adventure)
@@ -727,7 +747,7 @@ function drawTrajectory() {
 }
 
 function drawPathHistory() {
-  if (!showPathTaken || pathHistory.length < 2) return;
+  if ((!showPathTaken && state !== "crashed") || pathHistory.length < 2) return;
 
   ctx.beginPath();
   ctx.moveTo(pathHistory[0].x, pathHistory[0].y);
