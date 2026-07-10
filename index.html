@@ -292,12 +292,6 @@ function ensureWorld(upToX) {
   }
 }
 
-function pruneWorld() {
-  const cut = lander.x - W * 1.5;
-  while (adv.floor.length > 2 && adv.floor[1].x < cut) adv.floor.shift();
-  while (adv.ceil.length > 2 && adv.ceil[1].x < cut) adv.ceil.shift();
-  while (adv.pads.length > 0 && adv.pads[0].x1 < cut) adv.pads.shift();
-}
 
 function landOnPad(pad) {
   lander.onGround = true;
@@ -338,7 +332,6 @@ function update(dt) {
   if (state === "flying") {
     if (mode === "adventure") {
       ensureWorld(lander.x + W * 1.5);
-      pruneWorld();
     }
 
     if (lander.onGround) {
