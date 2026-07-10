@@ -97,6 +97,8 @@ let showPathTaken = false;    // 'r' toggles the historical path trace helper
 let pathHistory = [];         // stores {x, y} coordinates of the path taken
 let reviewScrollX = 0;        // scroll offset for reviewing trajectory after a crash
 let reviewScrollY = 0;        // vertical scroll offset for reviewing trajectory after a crash
+let currentScoreId = null;    // ID of the score for the current run
+let crashTime = 0;            // timestamp of when the lander crashed
 let paused = false;           // 'p' toggles pause during flight
 
 // Arcade world
@@ -198,6 +200,8 @@ function startRound() {
   pathHistory = [];
   reviewScrollX = 0;
   reviewScrollY = 0;
+  currentScoreId = null;
+  crashTime = 0;
   debris = [];
   message = "";
   banner = ""; bannerT = 0;
@@ -244,6 +248,8 @@ function advStart() {
   pathHistory = [];
   reviewScrollX = 0;
   reviewScrollY = 0;
+  currentScoreId = null;
+  crashTime = 0;
   debris = [];
   message = "";
   banner = "LIFT OFF WHEN READY — HEAD RIGHT →"; bannerT = 4;
@@ -490,7 +496,32 @@ function normalizeAngle(a) {
   return a;
 }
 
+function getHighScores(mode) {
+  const key = `apollo_scores_${mode}`;
+  try {
+    const val = localStorage.getItem(key);
+    return val ? JSON.parse(val) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveHighScore(mode, scoreVal) {
+  let scores = getHighScores(mode);
+  const currentId = Date.now() + Math.random().toString(36).substring(2, 7);
+  scores.push({ id: currentId, score: scoreVal, date: new Date().toLocaleDateString() });
+  scores.sort((a, b) => b.score - a.score);
+  if (scores.length > 100) scores = scores.slice(0, 100);
+  const key = `apollo_scores_${mode}`;
+  try {
+    localStorage.setItem(key, JSON.stringify(scores));
+  } catch (e) {}
+  return currentId;
+}
+
 function explode() {
+  currentScoreId = saveHighScore(mode, score);
+  crashTime = elapsed;
   for (let i = 0; i < 26; i++) {
     const a = Math.random() * Math.PI * 2;
     const s = 40 + Math.random() * 140;
@@ -586,6 +617,7 @@ function draw() {
   drawHUD();
   drawBanner();
   if (state !== "flying") drawEndScreen();
+  drawLeaderboard();
   if (paused) drawPauseScreen();
 }
 
@@ -770,6 +802,97 @@ function drawPathHistory() {
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.stroke();
+}
+
+function drawLeaderboard() {
+  if (state !== "crashed" || !currentScoreId) return;
+
+  const scores = getHighScores(mode);
+  const idx = scores.findIndex(s => s.id === currentScoreId);
+  
+  const width = 360;
+  const height = 180;
+  const x = W / 2 - width / 2;
+  const y = H / 2 + 60;
+
+  // Background and border
+  ctx.fillStyle = "rgba(15, 15, 20, 0.85)";
+  ctx.fillRect(x, y, width, height);
+  ctx.strokeStyle = "rgba(168, 85, 247, 0.6)"; // violet border matching trajectory
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, width, height);
+
+  // Title
+  ctx.font = "bold 13px Courier New";
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#ffd166";
+  ctx.fillText(`TOP 100 SCORES (${mode.toUpperCase()})`, x + width / 2, y + 22);
+  
+  // Draw separator line
+  ctx.strokeStyle = "rgba(168, 85, 247, 0.3)";
+  ctx.beginPath();
+  ctx.moveTo(x + 15, y + 30);
+  ctx.lineTo(x + width - 15, y + 30);
+  ctx.stroke();
+
+  // Scroll math
+  const entryHeight = 24;
+  const viewHeight = height - 45; // 135px
+  const targetScroll = idx >= 0 ? Math.max(0, idx * entryHeight - viewHeight / 2 + entryHeight / 2) : 0;
+  const maxScroll = Math.max(0, scores.length * entryHeight - viewHeight);
+  const finalTarget = Math.min(targetScroll, maxScroll);
+  
+  // Animation progress over 2.5 seconds
+  const duration = 2.5;
+  const t = Math.min(1, (elapsed - crashTime) / duration);
+  const easeOutQuad = t * (2 - t);
+  const currentScroll = finalTarget * easeOutQuad;
+
+  // Clip and draw entries
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x + 10, y + 35, width - 20, viewHeight - 5);
+  ctx.clip();
+
+  ctx.textAlign = "left";
+  ctx.font = "13px Courier New";
+
+  for (let i = 0; i < scores.length; i++) {
+    const s = scores[i];
+    const itemY = y + 35 + i * entryHeight - currentScroll + 16;
+    const isCurrent = s.id === currentScoreId;
+    
+    if (isCurrent) {
+      ctx.fillStyle = "rgba(168, 85, 247, 0.25)";
+      ctx.fillRect(x + 12, y + 35 + i * entryHeight - currentScroll + 2, width - 24, 20);
+      ctx.fillStyle = "#a855f7"; // violet color for highlighted score
+    } else {
+      ctx.fillStyle = "#aaa";
+    }
+
+    // Rank
+    const rankStr = `${i + 1}.`.padStart(4);
+    ctx.fillText(rankStr, x + 20, itemY);
+
+    // Score
+    const scoreStr = s.score.toString().padEnd(8);
+    ctx.fillText(scoreStr, x + 70, itemY);
+
+    // Date/Details
+    ctx.fillStyle = isCurrent ? "#a855f7" : "#666";
+    ctx.font = "11px Courier New";
+    ctx.fillText(s.date || "", x + 160, itemY - 1);
+    
+    if (isCurrent) {
+      ctx.font = "13px Courier New";
+      ctx.fillStyle = Math.sin(elapsed * 10) > 0 ? "#a855f7" : "transparent";
+      ctx.fillText("◀ YOU", x + 260, itemY);
+    }
+    
+    ctx.font = "13px Courier New";
+  }
+
+  ctx.restore();
 }
 
 function drawLander() {
