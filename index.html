@@ -96,6 +96,7 @@ let showTrajectory = false;   // 't' toggles the no-thrust trajectory helper
 let showPathTaken = false;    // 'r' toggles the historical path trace helper
 let pathHistory = [];         // stores {x, y} coordinates of the path taken
 let reviewScrollX = 0;        // scroll offset for reviewing trajectory after a crash
+let reviewScrollY = 0;        // vertical scroll offset for reviewing trajectory after a crash
 let paused = false;           // 'p' toggles pause during flight
 
 // Arcade world
@@ -196,6 +197,7 @@ function startRound() {
   particles = [];
   pathHistory = [];
   reviewScrollX = 0;
+  reviewScrollY = 0;
   debris = [];
   message = "";
   banner = ""; bannerT = 0;
@@ -241,6 +243,7 @@ function advStart() {
   particles = [];
   pathHistory = [];
   reviewScrollX = 0;
+  reviewScrollY = 0;
   debris = [];
   message = "";
   banner = "LIFT OFF WHEN READY — HEAD RIGHT →"; bannerT = 4;
@@ -327,6 +330,8 @@ function update(dt) {
     const scrollSpeed = 500; // pixels per second
     if (keys["ArrowLeft"])  reviewScrollX -= scrollSpeed * dt;
     if (keys["ArrowRight"]) reviewScrollX += scrollSpeed * dt;
+    if (keys["ArrowUp"])    reviewScrollY -= scrollSpeed * dt;
+    if (keys["ArrowDown"])  reviewScrollY += scrollSpeed * dt;
   }
 
   if (state === "flying") {
@@ -523,12 +528,15 @@ function draw() {
 
   if (state === "crashed") {
     camX += reviewScrollX;
+    camY += reviewScrollY;
     if (mode === "arcade") {
       camX = Math.max(-100, Math.min(100, camX));
+      camY = Math.max(-100, Math.min(100, camY));
     } else if (adv) {
       const minCam = Math.max(0, adv.startX - 100);
       const maxCam = Math.max(minCam, lander.x - W * 0.5);
       camX = Math.max(minCam, Math.min(maxCam, camX));
+      camY = Math.max(-500, Math.min(300, camY));
     }
   }
 
